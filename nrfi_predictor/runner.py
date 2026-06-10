@@ -276,7 +276,7 @@ class PipelineRunner:
             model_path=model_path,
             output_path=self.config.predictions_file,
         )
-        schedule_path = RAW_DIR / f"schedule_{prediction_date}.json"
+        schedule_path = self.config.statcast_file.parent / f"schedule_{prediction_date}.json"
         ensure_parent(schedule_path).write_text(json.dumps(fetch_schedule(prediction_date), indent=2), encoding="utf-8")
         self.artifacts.upload("predictions", output, metadata={"prediction_date": prediction_date})
         self.artifacts.upsert_refresh_state({"latest_predictions_path": self.artifacts.storage_path("predictions")})
