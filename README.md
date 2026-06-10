@@ -37,7 +37,17 @@ Deploy settings:
 - Branch: `main`
 - Main file path: `dashboard/app.py`
 
-The app starts without generated data. In the dashboard, click `Full Refresh` to fetch regular-season first-inning Statcast data, build training rows, train the model, backtest, and generate the latest predictions. Generated CSV/model/log files are intentionally ignored by Git.
+Add these Streamlit secrets before running refresh jobs:
+
+```toml
+SUPABASE_URL = "https://zyejqgeteawaiznxmvmv.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
+SUPABASE_ARTIFACT_BUCKET = "baseball-artifacts"
+```
+
+Run `supabase/baseball_backend.sql` in the Supabase SQL editor once to create the private artifact bucket and metadata tables.
+
+The app starts without generated data. In the dashboard, click `Full Refresh` to fetch regular-season first-inning Statcast data, build training rows, train the model, backtest, and generate the latest predictions. Generated CSV/model/log files are intentionally ignored by Git and uploaded to Supabase when secrets are configured.
 
 ## No-Terminal Workflow
 

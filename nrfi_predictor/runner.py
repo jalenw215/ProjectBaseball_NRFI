@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import traceback
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
 import pandas as pd
 
+from .artifacts import SupabaseArtifacts
 from .config import (
     DEFAULT_BACKTEST_FILE,
     DEFAULT_FETCH_STATE_FILE,
@@ -67,6 +68,7 @@ class PipelineRunner:
     def __init__(self, config: RunnerConfig | None = None, progress: ProgressCallback | None = None):
         self.config = config or default_config()
         self.progress = progress
+        self.artifacts = SupabaseArtifacts()
 
     def fetch_historical_data(self) -> StepResult:
         return self._run_step("Fetch historical data", self._fetch_historical_data)
@@ -121,6 +123,7 @@ class PipelineRunner:
         return results
 
     def _run_step(self, name: str, action: Callable[[], str]) -> StepResult:
+        started_at = datetime.now(timezone.utc)
         self._log(f"START {name}")
         self._emit(f"Starting: {name}")
         try:
@@ -128,12 +131,29 @@ class PipelineRunner:
         except Exception as exc:
             self._log(f"ERROR {name}: {exc}\n{traceback.format_exc()}")
             self._emit(f"Failed: {name} - {exc}")
+            self.artifacts.log_pipeline_run(
+                name,
+                "error",
+                detail=str(exc),
+                error=str(exc),
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+            )
             return StepResult(name=name, status="error", detail=str(exc))
         self._log(f"DONE {name}: {detail}")
         self._emit(f"Finished: {name}")
+        self.artifacts.log_pipeline_run(
+            name,
+            "ok",
+            detail=detail,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+        )
         return StepResult(name=name, status="ok", detail=detail)
 
     def _fetch_historical_data(self) -> str:
+        self.artifacts.download_if_missing("statcast", self.config.statcast_file)
+        self.artifacts.download_if_missing("fetch_state", self.config.fetch_state_file)
         cooldown = self._historical_fetch_cooldown()
         if cooldown is not None:
             return cooldown
@@ -148,13 +168,15 @@ class PipelineRunner:
             chunk_paths.append(chunk_path)
         combined = combine_statcast_chunks(chunk_paths, self.config.statcast_file)
         self._write_fetch_state(combined)
+        self.artifacts.upload("statcast", combined, metadata={"start_date": self.config.start_date.isoformat(), "end_date": self.config.end_date.isoformat()})
         return f"wrote {combined}"
 
     def _historical_fetch_cooldown(self) -> str | None:
         if self.config.min_fetch_interval_hours <= 0 or not self.config.statcast_file.exists():
             return None
+        remote_state = self.artifacts.read_refresh_state()
         state = read_fetch_state(self.config.fetch_state_file)
-        fetched_at_raw = state.get("fetched_at")
+        fetched_at_raw = remote_state.get("last_historical_fetch_at") or state.get("fetched_at")
         if not fetched_at_raw:
             return None
         try:
@@ -182,8 +204,18 @@ class PipelineRunner:
             "end_date": self.config.end_date.isoformat(),
         }
         ensure_parent(self.config.fetch_state_file).write_text(json.dumps(state, indent=2), encoding="utf-8")
+        self.artifacts.upload("fetch_state", self.config.fetch_state_file, metadata={"state": "historical_fetch"})
+        self.artifacts.upsert_refresh_state(
+            {
+                "last_historical_fetch_at": state["fetched_at"],
+                "cooldown_hours": self.config.min_fetch_interval_hours,
+                "latest_statcast_path": self.artifacts.storage_path("statcast"),
+                "metadata": {"start_date": state["start_date"], "end_date": state["end_date"]},
+            }
+        )
 
     def _build_training_set(self) -> str:
+        self.artifacts.download_if_missing("statcast", self.config.statcast_file)
         if not self.config.statcast_file.exists():
             chunk_paths = sorted(RAW_DIR.glob("statcast_????-??-??_????-??-??.csv"))
             if not chunk_paths:
@@ -191,15 +223,21 @@ class PipelineRunner:
             self._emit("Combining monthly Statcast files before training")
             combine_statcast_chunks(chunk_paths, self.config.statcast_file)
         output = build_training_rows(self.config.statcast_file, self.config.training_file, feature_set=self.config.feature_set)
+        self.artifacts.upload("training", output, metadata={"feature_set": self.config.feature_set})
+        self.artifacts.upsert_refresh_state({"latest_training_path": self.artifacts.storage_path("training")})
         return f"wrote {output}"
 
     def _train_model(self) -> str:
+        self.artifacts.download_if_missing("training", self.config.training_file)
         if not self.config.training_file.exists():
             raise FileNotFoundError(f"Missing training file: {self.config.training_file}")
         output = train_model(self.config.training_file, self.config.model_file, feature_set=self.config.feature_set)
+        self.artifacts.upload("model", output, metadata={"feature_set": self.config.feature_set})
+        self.artifacts.upsert_refresh_state({"latest_model_path": self.artifacts.storage_path("model")})
         return f"wrote {output}"
 
     def _run_backtest(self) -> str:
+        self.artifacts.download_if_missing("training", self.config.training_file)
         if not self.config.training_file.exists():
             raise FileNotFoundError(f"Missing training file: {self.config.training_file}")
         predictions = walk_forward_backtest(
@@ -210,6 +248,7 @@ class PipelineRunner:
         predictions.to_csv(ensure_parent(self.config.backtest_file), index=False)
         summary_path = self.config.backtest_file.with_suffix(".summary.json")
         ensure_parent(summary_path).write_text(json.dumps(summarize_backtest(predictions), indent=2), encoding="utf-8")
+        self.artifacts.upload("backtest", self.config.backtest_file, metadata={"feature_set": self.config.feature_set})
         return f"wrote {self.config.backtest_file}"
 
     def _run_experiments(self, feature_sets: list[str]) -> str:
@@ -224,6 +263,9 @@ class PipelineRunner:
 
     def _predict_today(self, prediction_date: str, model_path: Path | None = None) -> str:
         model_path = model_path or self.config.model_file
+        self.artifacts.download_if_missing("training", self.config.training_file)
+        if model_path == self.config.model_file:
+            self.artifacts.download_if_missing("model", model_path)
         if not self.config.training_file.exists():
             raise FileNotFoundError(f"Missing training file: {self.config.training_file}")
         if not model_path.exists():
@@ -236,6 +278,8 @@ class PipelineRunner:
         )
         schedule_path = RAW_DIR / f"schedule_{prediction_date}.json"
         ensure_parent(schedule_path).write_text(json.dumps(fetch_schedule(prediction_date), indent=2), encoding="utf-8")
+        self.artifacts.upload("predictions", output, metadata={"prediction_date": prediction_date})
+        self.artifacts.upsert_refresh_state({"latest_predictions_path": self.artifacts.storage_path("predictions")})
         return f"wrote {output}"
 
     def _emit(self, message: str) -> None:

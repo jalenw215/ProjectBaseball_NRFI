@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from nrfi_predictor.artifacts import SupabaseArtifacts
 from nrfi_predictor.config import (
     DEFAULT_BACKTEST_FILE,
     DEFAULT_MODEL_FILE,
@@ -27,6 +28,7 @@ from nrfi_predictor.strategy import BEST_TOP5, MODEL_STRATEGIES, resolve_model_s
 st.set_page_config(page_title="MLB NRFI/YRFI Predictor", layout="wide")
 st.title("MLB NRFI/YRFI Predictor")
 st.caption("Research probabilities only. Use backtests and calibration before treating anything as betting signal.")
+artifacts = SupabaseArtifacts()
 
 
 def run_job(label: str, action):
@@ -89,13 +91,21 @@ if st.button("Run Feature Experiments", use_container_width=True):
     run_job("Running feature group experiments", lambda r: [r.run_experiments()])
 
 status_cols = st.columns(4)
-status_cols[0].metric("Historical Data", "Ready" if DEFAULT_STATCAST_FILE.exists() else "Missing")
-status_cols[1].metric("Training Set", "Ready" if DEFAULT_TRAINING_FILE.exists() else "Missing")
-status_cols[2].metric("Model", "Ready" if DEFAULT_MODEL_FILE.exists() else "Missing")
-status_cols[3].metric("Predictions", "Ready" if DEFAULT_PREDICTIONS_FILE.exists() else "Missing")
+status_cols[0].metric("Historical Data", "Ready" if artifacts.artifact_ready("statcast", DEFAULT_STATCAST_FILE) else "Missing")
+status_cols[1].metric("Training Set", "Ready" if artifacts.artifact_ready("training", DEFAULT_TRAINING_FILE) else "Missing")
+status_cols[2].metric("Model", "Ready" if artifacts.artifact_ready("model", DEFAULT_MODEL_FILE) else "Missing")
+status_cols[3].metric("Predictions", "Ready" if artifacts.artifact_ready("predictions", DEFAULT_PREDICTIONS_FILE) else "Missing")
+
+if artifacts.configured:
+    st.caption(f"Supabase artifact storage enabled: `{artifacts.bucket}` / app prefix `nrfi/`.")
+else:
+    st.caption("Supabase artifact storage is not configured; using local session files only.")
 
 with st.expander("Refresh Log", expanded=not DEFAULT_PREDICTIONS_FILE.exists()):
     st.code(read_recent_log(DEFAULT_REFRESH_LOG), language="text")
+
+if not DEFAULT_PREDICTIONS_FILE.exists():
+    artifacts.download("predictions", DEFAULT_PREDICTIONS_FILE)
 
 if not DEFAULT_PREDICTIONS_FILE.exists():
     st.info("No predictions yet. Click Full Refresh to fetch data, train the model, backtest, and generate today's rankings.")
