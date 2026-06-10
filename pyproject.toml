@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlb-nrfi-predictor"
+version = "0.1.0"
+description = "Daily MLB NRFI/YRFI probability rankings using free public data sources."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "joblib>=1.4",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "python-dotenv>=1.0",
+  "requests>=2.32",
+  "scikit-learn>=1.5",
+  "streamlit>=1.36",
+]
+
+[project.optional-dependencies]
+discord = ["discord.py>=2.4"]
+dev = ["pytest>=8.2"]
+
+[project.scripts]
+nrfi-predictor = "nrfi_predictor.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nrfi_predictor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
