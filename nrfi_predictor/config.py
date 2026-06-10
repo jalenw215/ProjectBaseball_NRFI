@@ -23,6 +23,7 @@ DEFAULT_ODDS_FILE = RAW_DIR / "manual_nrfi_odds.csv"
 DEFAULT_STATCAST_FILE = RAW_DIR / "statcast_history.csv"
 DEFAULT_BACKTEST_FILE = PROCESSED_DIR / "backtest_predictions.csv"
 DEFAULT_REFRESH_LOG = LOGS_DIR / "refresh.log"
+DEFAULT_FETCH_STATE_FILE = LOGS_DIR / "historical_fetch_state.json"
 
 FEATURE_COLUMNS = [
     "away_team_pa_30",

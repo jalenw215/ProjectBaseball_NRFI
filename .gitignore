@@ -14,6 +14,7 @@ data/processed/*.json
 data/models/*.joblib
 data/predictions/*.csv
 data/logs/*.log
+data/logs/*.json
 data/experiments/*
 
 !data/raw/.gitkeep

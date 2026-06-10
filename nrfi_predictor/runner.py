@@ -11,6 +11,7 @@ import pandas as pd
 
 from .config import (
     DEFAULT_BACKTEST_FILE,
+    DEFAULT_FETCH_STATE_FILE,
     DEFAULT_FEATURE_SET,
     DEFAULT_MODEL_FILE,
     DEFAULT_PREDICTIONS_FILE,
@@ -39,6 +40,8 @@ class RunnerConfig:
     predictions_file: Path = DEFAULT_PREDICTIONS_FILE
     backtest_file: Path = DEFAULT_BACKTEST_FILE
     log_file: Path = DEFAULT_REFRESH_LOG
+    fetch_state_file: Path = DEFAULT_FETCH_STATE_FILE
+    min_fetch_interval_hours: int = 24
     min_train_days: int = 45
     feature_set: str = DEFAULT_FEATURE_SET
 
@@ -131,6 +134,9 @@ class PipelineRunner:
         return StepResult(name=name, status="ok", detail=detail)
 
     def _fetch_historical_data(self) -> str:
+        cooldown = self._historical_fetch_cooldown()
+        if cooldown is not None:
+            return cooldown
         chunk_paths = []
         for start, end in month_chunks(self.config.start_date, self.config.end_date):
             chunk_path = RAW_DIR / f"statcast_{start}_{end}.csv"
@@ -141,7 +147,41 @@ class PipelineRunner:
                 fetch_statcast_csv(start.isoformat(), end.isoformat(), chunk_path)
             chunk_paths.append(chunk_path)
         combined = combine_statcast_chunks(chunk_paths, self.config.statcast_file)
+        self._write_fetch_state(combined)
         return f"wrote {combined}"
+
+    def _historical_fetch_cooldown(self) -> str | None:
+        if self.config.min_fetch_interval_hours <= 0 or not self.config.statcast_file.exists():
+            return None
+        state = read_fetch_state(self.config.fetch_state_file)
+        fetched_at_raw = state.get("fetched_at")
+        if not fetched_at_raw:
+            return None
+        try:
+            fetched_at = datetime.fromisoformat(str(fetched_at_raw))
+        except ValueError:
+            return None
+        elapsed = datetime.now() - fetched_at
+        cooldown = timedelta(hours=self.config.min_fetch_interval_hours)
+        if elapsed >= cooldown:
+            return None
+        next_allowed = fetched_at + cooldown
+        detail = (
+            f"skipped historical fetch; last successful fetch was {fetched_at.isoformat(timespec='seconds')} "
+            f"and next fetch is allowed after {next_allowed.isoformat(timespec='seconds')}"
+        )
+        self._emit(detail)
+        self._log(f"SKIP Fetch historical data: {detail}")
+        return detail
+
+    def _write_fetch_state(self, path: Path) -> None:
+        state = {
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "statcast_file": str(path),
+            "start_date": self.config.start_date.isoformat(),
+            "end_date": self.config.end_date.isoformat(),
+        }
+        ensure_parent(self.config.fetch_state_file).write_text(json.dumps(state, indent=2), encoding="utf-8")
 
     def _build_training_set(self) -> str:
         if not self.config.statcast_file.exists():
@@ -243,3 +283,12 @@ def read_recent_log(log_file: Path = DEFAULT_REFRESH_LOG, max_lines: int = 80) -
         return "No refresh log yet."
     lines = log_file.read_text(encoding="utf-8").splitlines()
     return "\n".join(lines[-max_lines:])
+
+
+def read_fetch_state(fetch_state_file: Path = DEFAULT_FETCH_STATE_FILE) -> dict:
+    if not fetch_state_file.exists():
+        return {}
+    try:
+        return json.loads(fetch_state_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}

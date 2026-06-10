@@ -52,6 +52,8 @@ Use the dashboard buttons:
 
 `Full Refresh` fetches the current two-season Statcast window, builds training rows, trains the model, runs a backtest, and generates today's rankings.
 
+To be gentle with public data sources, the historical Statcast fetch has a 24-hour cooldown after a successful pull. During that cooldown, `Full Refresh` skips the API-heavy historical fetch and continues with the local data already on disk.
+
 ## CLI Workflow
 
 ```bash
